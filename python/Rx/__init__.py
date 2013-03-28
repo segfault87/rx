@@ -4,8 +4,25 @@ import types
 
 core_types = [ ]
 
+
 class Error(Exception):
   pass
+
+
+class ValidationError(Error):
+  def __init__(self, schema, call_stack, value, message):
+    self.schema = schema
+    self.call_stack = list(call_stack)
+    self.value = value
+    self.message = message
+
+  def __repr__(self):
+    if len(self.call_stack) == 0:
+      callstack = '(root)'
+    else:
+      callstack = '.'.join([str(i) for i in self.call_stack])
+    return '<ValidationError %s at %s>: %s' % (self.schema.uri(), callstack, self.message)
+
 
 class Util(object):
   @staticmethod
@@ -18,13 +35,15 @@ class Util(object):
       range[entry] = opt[entry]
 
     def check_range(value):
-      if range.get('min'   ) != None and value <  range['min'   ]: return False
-      if range.get('min-ex') != None and value <= range['min-ex']: return False
-      if range.get('max-ex') != None and value >= range['max-ex']: return False
-      if range.get('max'   ) != None and value >  range['max'   ]: return False
+      if (range.get('min'   ) != None and value <  range['min'   ]) or \
+         (range.get('min-ex') != None and value <= range['min-ex']) or \
+         (range.get('max-ex') != None and value >= range['max-ex']) or \
+         (range.get('max'   ) != None and value >  range['max'   ]):
+        return False
       return True
 
     return check_range
+
 
 class Factory(object):
   def __init__(self, opt={}):
@@ -99,6 +118,7 @@ class Factory(object):
     else:
       return type_class(schema, self)
 
+
 class _CoreType(object):
   @classmethod
   def uri(self):
@@ -108,7 +128,9 @@ class _CoreType(object):
     if not set(schema.keys()).issubset(set(['type'])):
       raise Error('unknown parameter for //%s' % self.subname())
 
-  def check(self, value): return False
+  def check(self, value, stack=[]):
+    pass
+
 
 class AllType(_CoreType):
   @staticmethod
@@ -123,10 +145,12 @@ class AllType(_CoreType):
 
     self.alts = [ rx.make_schema(s) for s in schema['of'] ]
 
-  def check(self, value):
+  def check(self, value, stack=[]):
+    index = 0
     for schema in self.alts:
-      if (not schema.check(value)): return False
-    return True
+      schema.check(value, stack)
+      index += 1
+
 
 class AnyType(_CoreType):
   @staticmethod
@@ -142,13 +166,23 @@ class AnyType(_CoreType):
       if not schema['of']: raise Error('no alternatives given in //any of')
       self.alts = [ rx.make_schema(alt) for alt in schema['of'] ]
 
-  def check(self, value):
-    if self.alts is None: return True
+  def check(self, value, stack=[]):
+    if self.alts is None: return
 
+    matches = 0
+    exceptions = []
     for alt in self.alts:
-      if alt.check(value): return True
+      try:
+        alt.check(value, stack)
+        matches += 1
+      except ValidationError, e:
+        exceptions.append(e)
+        continue
 
-    return False
+    if matches == 0:
+      raise ValidationError(self, stack, value,
+                            'Any of following clause(s) unsatisfied: %r' % exceptions)
+        
 
 class ArrType(_CoreType):
   @staticmethod
@@ -168,34 +202,46 @@ class ArrType(_CoreType):
     if schema.get('length'):
       self.length = Util.make_range_check( schema["length"] )
 
-  def check(self, value):
-    if not(type(value) in [ type([]), type(()) ]): return False
-    if self.length and not self.length(len(value)): return False
+  def check(self, value, stack=[]):
+    if not(type(value) in [ type([]), type(()) ]):
+      raise ValidationError(self, stack, value,
+                            'invalid type %r. list or tuple expected.' % type(value))
+    if self.length and not self.length(len(value), stack):
+      raise ValidationError(self, stack, value, 'range mismatch.')
 
+    index = 0
     for item in value:
-      if not self.content_schema.check(item): return False
+      stack.append(index)
+      self.content_schema.check(item, stack)
+      stack.pop()
 
-    return True;
 
 class BoolType(_CoreType):
   @staticmethod
   def subname(): return 'bool'
 
-  def check(self, value):
-    if value is True or value is False: return True
-    return False
+  def check(self, value, stack=[]):
+    if value is True or value is False: return
+    raise ValidationError(self, stack, value, 'boolean expected.')
+
 
 class DefType(_CoreType):
   @staticmethod
   def subname(): return 'def'
 
-  def check(self, value): return not(value is None)
+  def check(self, value, stack=[]):
+    if not(value is None):
+      return
+    raise ValidationError(self, stack, value, 'must not be null.')
+
 
 class FailType(_CoreType):
   @staticmethod
   def subname(): return 'fail'
 
-  def check(self, value): return False
+  def check(self, value, stack=[]):
+    raise ValidationError(self, stack, value, 'forced failure.') 
+
 
 class IntType(_CoreType):
   @staticmethod
@@ -217,12 +263,19 @@ class IntType(_CoreType):
     if schema.has_key('range'):
       self.range = Util.make_range_check( schema["range"] )
 
-  def check(self, value):
-    if not(type(value) in (float, int, long)): return False
-    if value % 1 != 0: return False
-    if self.range and not self.range(value): return False
-    if (not self.value is None) and value != self.value: return False
-    return True
+  def check(self, value, stack=[]):
+    if not(type(value) in (float, int, long)):
+      raise ValidationError(self, stack, value,
+                            'invalid type %r. int or long or float expected.' % type(value))
+    if value % 1 != 0:
+      raise ValidationError(self, stack, value,
+                            'not a number.')
+    if self.range and not self.range(value):
+      raise ValidationError(self, stack, value,
+                            'not in range.')
+    if (not self.value is None) and value != self.value:
+      raise ValidationError(self, stack, value, 'value is null,')
+
 
 class MapType(_CoreType):
   @staticmethod
@@ -239,19 +292,25 @@ class MapType(_CoreType):
 
     self.value_schema = rx.make_schema(schema['values'])
 
-  def check(self, value):
-    if not(type(value) is type({})): return False
+  def check(self, value, stack=[]):
+    if not(type(value) is type({})):
+      raise ValidationError(self, stack, value,
+                            'invalid type %r. dict expected.' % type(value))
 
-    for v in value.values():
-      if not self.value_schema.check(v): return False
+    for k, v in value.iteritems():
+      stack.append(k)
+      self.value_schema.check(v, stack)
+      stack.pop()
 
-    return True;
 
 class NilType(_CoreType):
   @staticmethod
   def subname(): return 'nil'
 
-  def check(self, value): return value is None
+  def check(self, value, stack=[]):
+    if not value is None:
+      raise ValidationError(self, stack, value, 'must be null.')
+
 
 class NumType(_CoreType):
   @staticmethod
@@ -272,20 +331,25 @@ class NumType(_CoreType):
     if schema.get('range'):
       self.range = Util.make_range_check( schema["range"] )
 
-  def check(self, value):
-    if not(type(value) in (float, int, long)): return False
-    if self.range and not self.range(value): return False
-    if (not self.value is None) and value != self.value: return False
-    return True
+  def check(self, value, stack=[]):
+    if not(type(value) in (float, int, long)):
+      raise ValidationError(self, stack, value,
+                            'invalid type %r. float or int or long expected.' % type(value))
+    if self.range and not self.range(value):
+      raise ValidationError(self, stack, value, 'not in range.')
+    if (not self.value is None) and value != self.value:
+      raise ValidationError(self, stack, value, 'value is null')
+
 
 class OneType(_CoreType):
   @staticmethod
   def subname(): return 'one'
 
-  def check(self, value):
-    if type(value) in (int, float, long, bool, str, unicode): return True
+  def check(self, value, stack=[]):
+    if type(value) in (int, float, long, bool, str, unicode):
+      return
+    raise ValidationError(self, stack, value, 'must be a single item.')
 
-    return False
 
 class RecType(_CoreType):
   @staticmethod
@@ -311,29 +375,38 @@ class RecType(_CoreType):
           schema[which][field]
         )
 
-  def check(self, value):
-    if not(type(value) is type({})): return False
+  def check(self, value, stack=[]):
+    if not(type(value) is type({})):
+      raise ValidationError(self, stack, value,
+                            'invalid type %r. dict expected.' % type(value))
 
     unknown = [ ]
     for field in value.keys():
       if not field in self.known: unknown.append(field)
 
-    if len(unknown) and not self.rest_schema: return False
+    if len(unknown) and not self.rest_schema:
+      raise ValidationError(self, stack, value,
+                            'unknown key(s) %r.' % unknown)
 
     for field in self.required.keys():
-      if not value.has_key(field): return False
-      if not self.required[field].check( value[field] ): return False
+      if not value.has_key(field):
+        raise ValidationError(self, stack, value,
+                              'required field \'%s\' not found.' % field)
+      stack.append(field)
+      self.required[field].check( value[field], stack )
+      stack.pop()
 
     for field in self.optional.keys():
       if not value.has_key(field): continue
-      if not self.optional[field].check( value[field] ): return False
+      stack.append(field)
+      self.optional[field].check( value[field], stack )
+      stack.pop()
 
     if len(unknown):
       rest = { }
       for field in unknown: rest[field] = value[field]
-      if not self.rest_schema.check(rest): return False
+      self.rest_schema.check(rest, stack)
 
-    return True;
 
 class SeqType(_CoreType):
   @staticmethod
@@ -352,30 +425,34 @@ class SeqType(_CoreType):
     if (schema.get('tail')):
       self.tail_schema = rx.make_schema(schema['tail'])
 
-  def check(self, value):
-    if not(type(value) in [ type([]), type(()) ]): return False
+  def check(self, value, stack=[]):
+    if not(type(value) in [ type([]), type(()) ]):
+      raise ValidationError(self, stack, value,
+                            'invalid type %r. list or tuple expected.' % type(value))
 
     if len(value) < len(self.content_schema):
-      return False
+      raise ValidationError(self, stack, value,
+                            'length mismatch (schema: %d, input: %d' % (len(self.content_schema), len(value)))
 
     for i in range(0, len(self.content_schema)):
-      if not self.content_schema[i].check(value[i]):
-        return False
+      stack.append(i)
+      self.content_schema[i].check(value[i], stack)
+      stack.pop()
 
     if len(value) > len(self.content_schema):
-      if not self.tail_schema: return False
+      if not self.tail_schema:
+        raise ValidationError(self, stack, value, 'no tail schema specified.')
+      stack.append(len(self.content_schema))
+      self.tail_schema.check(value[ len(self.content_schema) :  ], stack)
+      stack.pop()
 
-      if not self.tail_schema.check(value[ len(self.content_schema) :  ]):
-        return False
-
-    return True;
 
 class StrType(_CoreType):
   @staticmethod
   def subname(): return 'str'
 
   def __init__(self, schema, rx):
-    if not set(schema.keys()).issubset(set(('type', 'value', 'length'))):
+    if not set(schema.keys()).issubset(set(('type', 'value', 'length', 'pattern'))):
       raise Error('unknown parameter for //str')
 
     self.value = None
@@ -384,15 +461,25 @@ class StrType(_CoreType):
         raise Error('invalid value parameter for //str')
       self.value = schema['value']
 
+    self.pattern = None
+    if schema.has_key('pattern'):
+      self.pattern = re.compile(schema['pattern'])
+
     self.length = None
     if schema.has_key('length'):
       self.length = Util.make_range_check( schema["length"] )
 
-  def check(self, value):
-    if not type(value) in (str, unicode): return False
-    if (not self.value is None) and value != self.value: return False
-    if self.length and not self.length(len(value)): return False
-    return True
+  def check(self, value, stack=[]):
+    if not type(value) in (str, unicode):
+      raise ValidationError(self, stack, value,
+                            'invalid type %r. str or unicode expected.' % type(value))
+    if (not self.value is None) and value != self.value:
+      raise ValidationError(self, stack, value, 'value mismatch. (must be %s)' % self.value)
+    if (not self.pattern is None) and not re.search(self.pattern, value):
+      raise ValidationError(self, stack, value, 'regular expression does not match')
+    if self.length and not self.length(len(value)):
+      raise ValidationError(self, stack, value, 'length mismatch. (must be %d)' % self.length)
+
 
 core_types = [
   AllType,  AnyType, ArrType, BoolType, DefType,
