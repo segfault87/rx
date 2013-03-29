@@ -214,6 +214,7 @@ class ArrType(_CoreType):
       stack.append(index)
       self.content_schema.check(item, stack)
       stack.pop()
+      index += 1
 
 
 class BoolType(_CoreType):
@@ -432,7 +433,7 @@ class SeqType(_CoreType):
 
     if len(value) < len(self.content_schema):
       raise ValidationError(self, stack, value,
-                            'length mismatch (schema: %d, input: %d' % (len(self.content_schema), len(value)))
+                            'length mismatch (specified: %d, input: %d)' % (len(self.content_schema), len(value)))
 
     for i in range(0, len(self.content_schema)):
       stack.append(i)
