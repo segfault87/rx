@@ -206,8 +206,9 @@ class EitherType(_CoreType):
     for alt in self.alts:
       if value == alt:
         return
-    raise ValidationError(self, stack, value,
-                          'Any of following clause(s) unsatisfied: %r' % exceptions)
+    raise ValidationError(
+        self, stack, value,
+        'The value "{}" is not one of: {}'.format(value, str(self.alts)))
 
 
 class ArrType(_CoreType):
