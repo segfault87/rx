@@ -184,6 +184,32 @@ class AnyType(_CoreType):
                             'Any of following clause(s) unsatisfied: %r' % exceptions)
 
 
+class EitherType(_CoreType):
+  @staticmethod
+  def subname(): return 'either'
+
+  def __init__(self, schema, rx):
+    self.alts = None
+
+    if not set(schema.keys()).issubset(set(('type', 'of'))):
+      raise Error('unknown parameter for //either')
+
+    if schema.get('of') != None:
+      if not schema['of']: raise Error('no alternatives given in //either of')
+      self.alts = schema['of']
+
+  def check(self, value, stack=[]):
+    if self.alts is None: return
+
+    matches = 0
+    exceptions = []
+    for alt in self.alts:
+      if value == alt:
+        return
+    raise ValidationError(self, stack, value,
+                          'Any of following clause(s) unsatisfied: %r' % exceptions)
+
+
 class ArrType(_CoreType):
   @staticmethod
   def subname(): return 'arr'
@@ -485,5 +511,5 @@ class StrType(_CoreType):
 core_types = [
   AllType,  AnyType, ArrType, BoolType, DefType,
   FailType, IntType, MapType, NilType,  NumType,
-  OneType,  RecType, SeqType, StrType
+  OneType,  RecType, SeqType, StrType, EitherType
 ]
