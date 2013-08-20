@@ -139,7 +139,7 @@ class AllType(_CoreType):
   def __init__(self, schema, rx):
     if not set(schema.keys()).issubset(set(('type', 'of'))):
       raise Error('unknown parameter for //all')
-    
+
     if not(schema.get('of') and len(schema.get('of'))):
       raise Error('no alternatives given in //all of')
 
@@ -161,7 +161,7 @@ class AnyType(_CoreType):
 
     if not set(schema.keys()).issubset(set(('type', 'of'))):
       raise Error('unknown parameter for //any')
-    
+
     if schema.get('of') != None:
       if not schema['of']: raise Error('no alternatives given in //any of')
       self.alts = [ rx.make_schema(alt) for alt in schema['of'] ]
@@ -182,7 +182,34 @@ class AnyType(_CoreType):
     if matches == 0:
       raise ValidationError(self, stack, value,
                             'Any of following clause(s) unsatisfied: %r' % exceptions)
-        
+
+
+class EitherType(_CoreType):
+  @staticmethod
+  def subname(): return 'either'
+
+  def __init__(self, schema, rx):
+    self.alts = None
+
+    if not set(schema.keys()).issubset(set(('type', 'of'))):
+      raise Error('unknown parameter for //either')
+
+    if schema.get('of') != None:
+      if not schema['of']: raise Error('no alternatives given in //either of')
+      self.alts = schema['of']
+
+  def check(self, value, stack=[]):
+    if self.alts is None: return
+
+    matches = 0
+    exceptions = []
+    for alt in self.alts:
+      if value == alt:
+        return
+    raise ValidationError(
+        self, stack, value,
+        'The value "{}" is not one of: {}'.format(value, str(self.alts)))
+
 
 class ArrType(_CoreType):
   @staticmethod
@@ -206,7 +233,7 @@ class ArrType(_CoreType):
     if not(type(value) in [ type([]), type(()) ]):
       raise ValidationError(self, stack, value,
                             'invalid type %r. list or tuple expected.' % type(value))
-    if self.length and not self.length(len(value), stack):
+    if self.length and not self.length(len(value)):
       raise ValidationError(self, stack, value, 'range mismatch.')
 
     index = 0
@@ -241,7 +268,7 @@ class FailType(_CoreType):
   def subname(): return 'fail'
 
   def check(self, value, stack=[]):
-    raise ValidationError(self, stack, value, 'forced failure.') 
+    raise ValidationError(self, stack, value, 'forced failure.')
 
 
 class IntType(_CoreType):
@@ -485,5 +512,5 @@ class StrType(_CoreType):
 core_types = [
   AllType,  AnyType, ArrType, BoolType, DefType,
   FailType, IntType, MapType, NilType,  NumType,
-  OneType,  RecType, SeqType, StrType
+  OneType,  RecType, SeqType, StrType, EitherType
 ]
